@@ -5,10 +5,16 @@ end
 local NOTIFICATION_PATH = "tmc/notification.json"
 local SOUND_PATH = "tmc/notification.mp3"
 local DEFAULT_NOTIFICATION = {
-	["unlocked"] = "Cursor Unlocked",
-	["locked"] = "Cursor Locked",
+	["unlocked"] = "Remix Menu Opened",
+	["locked"] = "Remix Menu Closed",
 }
 local WHITE = Color(255, 255, 255, 255)
+
+-- Remix UI states
+local UI_STATE_NONE = 0
+local UI_STATE_BASIC = 1
+local UI_STATE_ADVANCED = 2
+local previousRtxUiState = UI_STATE_NONE
 
 surface.CreateFont("tmc_NotifyFont", {
 	font = "Arial",
@@ -22,7 +28,7 @@ local notificationsEnabled = CreateClientConVar(
 	"1",
 	true,
 	false,
-	"Enable or disable notifications when tmc_togglemousecursor executes",
+	"Enable or disable notifications when Remix UI state changes",
 	0,
 	1
 )
@@ -123,16 +129,76 @@ local function notify(text, lifetime, debounceTime)
 	end)
 end
 
-local function handleToggleMouse()
-	enabled = not enabled
-	gui.EnableScreenClicker(enabled)
-	worldPanel:SetWorldClicker(enabled)
-	hudPanel:SetWorldClicker(enabled)
-	if notificationsEnabled:GetBool() then
-		local customText = getCustomText(NOTIFICATION_PATH)
-		local text = enabled and customText.unlocked or customText.locked
-		notify(text, 1, 0.5)
-	end
-end
+-- Add this Think hook to monitor the Remix UI state
+hook.Add("Think", "TMC_MonitorRemixUI", function()
+    -- Check if the GetRemixUIState function exists (from our module)
+    if not GetRemixUIState then return end
+    
+    -- Get the current UI state
+    local rtxUiState = GetRemixUIState()
+    
+    -- Only process if the state has changed
+    if rtxUiState ~= previousRtxUiState then
+        local isRtxUiActive = rtxUiState ~= UI_STATE_NONE
+        previousRtxUiState = rtxUiState
+        
+        -- Update cursor visibility based on Remix UI state
+        enabled = isRtxUiActive
+        gui.EnableScreenClicker(enabled)
+        worldPanel:SetWorldClicker(enabled)
+        hudPanel:SetWorldClicker(enabled)
+        
+        -- Update input blocking
+        if enabled then
+            -- Block input when Remix UI is active
+            hook.Add("CreateMove", "TMC_BlockAttacks", function(cmd)
+                cmd:RemoveKey(IN_ATTACK)
+                cmd:RemoveKey(IN_ATTACK2)
+                return true
+            end)
 
-concommand.Add("tmc_togglemousecursor", handleToggleMouse)
+            hook.Add("StartCommand", "TMC_BlockInput", function(ply, cmd)
+                if ply == LocalPlayer() then
+                    cmd:ClearMovement()
+                    cmd:ClearButtons()
+                end
+            end)
+
+            hook.Add("InputMouseApply", "TMC_BlockMouseInput", function()
+                return true
+            end)
+            
+            if notificationsEnabled:GetBool() then
+                local customText = getCustomText(NOTIFICATION_PATH)
+                notify(customText.unlocked, 1, 0.5)
+            end
+        else
+            -- Unblock input when Remix UI is closed
+            hook.Remove("CreateMove", "TMC_BlockAttacks")
+            hook.Remove("StartCommand", "TMC_BlockInput")
+            hook.Remove("InputMouseApply", "TMC_BlockMouseInput")
+            
+            if notificationsEnabled:GetBool() then
+                local customText = getCustomText(NOTIFICATION_PATH)
+                notify(customText.locked, 1, 0.5)
+            end
+        end
+    end
+end)
+
+-- Add a debug command to display current UI state
+concommand.Add("rtx_ui_state", function()
+    if GetRemixUIState then
+        local rtxUiState = GetRemixUIState()
+        local stateNames = {
+            [UI_STATE_NONE] = "None (UI not visible)",
+            [UI_STATE_BASIC] = "Basic UI",
+            [UI_STATE_ADVANCED] = "Advanced UI"
+        }
+        
+        print("Current RTX UI state:", rtxUiState, stateNames[rtxUiState] or "Unknown")
+        print("TMC cursor enabled:", enabled)
+    else
+        print("GetRemixUIState function not available")
+    end
+end)
